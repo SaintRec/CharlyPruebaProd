@@ -1,41 +1,64 @@
-- name: Actualizar OpenProject
+name: Flujo de Producción y OpenProject
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  deploy-logic:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validar Preproducción
+        if: github.event_name == 'pull_request'
+        run: echo "✅ Preproducción OK"
+
+      - name: Actualizar OpenProject
+        # CONDICIÓN DE SEGURIDAD: Solo se ejecuta si el Dueño del Repo hace el Merge
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner
         env:
           OP_API_KEY: ${{ secrets.OP_API_KEY }}
           OP_URL: ${{ secrets.OP_INSTANCE_URL }}
           OP_NEW_STATUS_ID: ${{ secrets.OP_STATUS_ID }}
         run: |
-          # --- 1. OBTENER DATOS DE GIT ---
+          # --- 1. OBTENER DATOS ---
           COMMIT_MSG=$(git log -1 --pretty=%s)
           SHA_CURRENT=$(git rev-parse --short HEAD)
           
-          # TRUCO: Obtener solo el ÚLTIMO padre (La rama que entró)
-          # 'awk {print $NF}' toma la última palabra de la línea
+          # Obtener el SHA de la rama que se fusionó (último padre)
           SHA_PARENT_RAW=$(git log -1 --pretty=%p | awk '{print $NF}')
           SHA_PARENT=$(git rev-parse --short $SHA_PARENT_RAW)
           
+          # Nombre limpio del repositorio
           REPO_NAME=${GITHUB_REPOSITORY#*/}
           
-          # Diff contra ese padre específico
+          # Lista de archivos modificados en este merge
           FILE_DIFF=$(git --no-pager diff --name-only $SHA_PARENT_RAW HEAD)
 
-          # --- 2. EXTRAER ID DEL TICKET ---
+          # --- 2. EXTRAER ID TICKET ---
           BRANCH_FULL=$(echo "$COMMIT_MSG" | grep -oE 'from .+' | awk '{print $NF}')
           if [ -z "$BRANCH_FULL" ]; then BRANCH_FULL="$COMMIT_MSG"; fi
           TICKET_ID=$(echo "$BRANCH_FULL" | grep -oE '[0-9]+$' | head -n 1)
           
           if [ -z "$TICKET_ID" ]; then
-            echo "⚠️ No se detectó ID. Fin."
+            echo "⚠️ No se detectó ID de ticket. Fin."
             exit 0
           fi
           
-          echo "🎯 Ticket #$TICKET_ID | Parent (Rama entrante): $SHA_PARENT"
+          echo "🎯 Ticket #$TICKET_ID | Parent: $SHA_PARENT | Repo: $REPO_NAME"
 
           # --- 3. ENVIAR NOTA (POST) ---
           read -r -d '' NOTE_TEXT <<EOM || true
-          *5. Datos de versionamiento en producción*
+          *Datos de versionamiento en producción*
 
-          *Repositorio:* $REPO_NAME
+          *Repositorio:* $REPO_NAME (GitHub)
           *Commit:* $COMMIT_MSG
           *sha1 Actual:* $SHA_CURRENT
           *sha1 Parent:* $SHA_PARENT
@@ -45,24 +68,38 @@
 
           jq -n --arg desc "$NOTE_TEXT" '{ comment: { raw: $desc } }' > comment_payload.json
           
-          curl -s -o /dev/null -X POST "$OP_URL/api/v3/work_packages/$TICKET_ID/activities" \
+          HTTP_NOTE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$OP_URL/api/v3/work_packages/$TICKET_ID/activities" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
-            -d @comment_payload.json
-          
-          echo "✅ Nota enviada."
+            -d @comment_payload.json)
+
+          if [ "$HTTP_NOTE" -eq 200 ] || [ "$HTTP_NOTE" -eq 201 ]; then
+             echo "✅ Nota guardada."
+          else
+             echo "⚠️ Error al guardar nota ($HTTP_NOTE)."
+          fi
 
           # --- 4. ACTUALIZAR ESTADO (PATCH) ---
           LOCK_VERSION=$(curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID" | jq .lockVersion)
           
+          if [ "$LOCK_VERSION" == "null" ] || [ -z "$LOCK_VERSION" ]; then
+             echo "❌ Error: No se pudo leer el ticket."
+             exit 1
+          fi
+
           jq -n \
             --argjson lock "$LOCK_VERSION" \
             --arg status_href "/api/v3/statuses/$OP_NEW_STATUS_ID" \
             '{ lockVersion: $lock, _links: { status: { href: $status_href } } }' > status_payload.json
 
-          curl -s -o /dev/null -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
-            -d @status_payload.json
-            
-          echo "✅ Estado actualizado."
+            -d @status_payload.json)
+
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ ¡Ticket #$TICKET_ID actualizado correctamente!"
+          else
+            echo "❌ Fallo al cambiar estado ($HTTP_STATUS)"
+            exit 0 
+          fi
