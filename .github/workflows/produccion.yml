@@ -9,31 +9,37 @@ on:
 jobs:
   deploy-logic:
     runs-on: ubuntu-latest
-    if: github.repository == 'CharlyB03/CharlyPruebaProd'
-
+    
     steps:
       - name: Checkout del código
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # --- FASE 1: VALIDACIÓN ---
+      # --- FASE 1: VALIDACIÓN (Funciona para cualquiera en PR) ---
       - name: Validar Preproducción
         if: github.event_name == 'pull_request'
         run: echo "✅ Preproducción OK"
 
-      # --- FASE 2: PRODUCCIÓN ---
+      # --- FASE 2: PRODUCCIÓN (SOLO DUEÑO DEL REPO) ---
       - name: Actualizar OpenProject
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # CONDICIÓN BLINDADA:
+        # 1. Debe ser un push (merge).
+        # 2. Debe ser en la rama main.
+        # 3. EL USUARIO QUE HACE EL MERGE DEBE SER EL DUEÑO DEL REPO.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner
         env:
           OP_API_KEY: ${{ secrets.OP_API_KEY }}
           OP_URL: ${{ secrets.OP_INSTANCE_URL }}
           OP_NEW_STATUS_ID: ${{ secrets.OP_STATUS_ID }}
         run: |
-          # 1. OBTENER DATOS DE GIT
+          # 1. OBTENER DATOS
           COMMIT_MSG=$(git log -1 --pretty=%s)
           SHA_CURRENT=$(git rev-parse --short HEAD)
           SHA_PARENT=$(git rev-parse --short HEAD^ 2>/dev/null || echo "init")
+          
+          # Detecta el nombre del repo automáticamente
+          REPO_NAME=${GITHUB_REPOSITORY#*/}
           
           if [ "$SHA_PARENT" == "init" ]; then
              FILE_DIFF="Primer despliegue"
@@ -47,70 +53,63 @@ jobs:
           TICKET_ID=$(echo "$BRANCH_FULL" | grep -oE '[0-9]+$' | head -n 1)
           
           if [ -z "$TICKET_ID" ]; then
-            echo "⚠️ No se detectó ID de ticket. Omitiendo."
+            echo "⚠️ No se detectó ID de ticket. Omitiendo actualización."
             exit 0
           fi
           
-          echo "🎯 Procesando Ticket #$TICKET_ID"
+          echo "🎯 Procesando Ticket #$TICKET_ID para el proyecto: $REPO_NAME"
 
           # ---------------------------------------------------------
-          # PASO A: ENVIAR LA NOTA (Usando POST /activities como en Postman)
+          # PASO A: ENVIAR LA NOTA (Método Seguro POST)
           # ---------------------------------------------------------
           read -r -d '' NOTE_TEXT <<EOM || true
           *5. Datos de versionamiento en producción*
 
-          *Versionado en:* Comreivic (GitHub)
+          *Repositorio:* $REPO_NAME (GitHub)
           *Commit:* $COMMIT_MSG
           *sha1:* $SHA_CURRENT
           *Extraer Archivos:*
           $FILE_DIFF
           EOM
 
-          # Construimos JSON solo para el comentario (No requiere lockVersion)
+          # Construimos JSON para el comentario
           jq -n --arg desc "$NOTE_TEXT" '{ comment: { raw: $desc } }' > comment_payload.json
           
-          echo "📨 Enviando Nota de Despliegue..."
+          echo "📨 Enviando Nota..."
           HTTP_CODE_NOTE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$OP_URL/api/v3/work_packages/$TICKET_ID/activities" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
             -d @comment_payload.json)
 
           if [ "$HTTP_CODE_NOTE" -eq 200 ] || [ "$HTTP_CODE_NOTE" -eq 201 ]; then
-             echo "✅ Nota guardada correctamente."
+             echo "✅ Nota guardada."
           else
-             echo "⚠️ No se pudo guardar la nota (Código $HTTP_CODE_NOTE), pero intentaremos cerrar el ticket."
+             echo "⚠️ No se pudo guardar la nota ($HTTP_CODE_NOTE)."
           fi
 
           # ---------------------------------------------------------
-          # PASO B: ACTUALIZAR ESTADO (Usando PATCH con lockVersion)
+          # PASO B: ACTUALIZAR ESTADO (Método Seguro PATCH)
           # ---------------------------------------------------------
-          
-          # 1. Obtenemos el lockVersion ACTUALIZADO (porque al comentar cambió)
           LOCK_VERSION=$(curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID" | jq .lockVersion)
           
           if [ "$LOCK_VERSION" == "null" ] || [ -z "$LOCK_VERSION" ]; then
-             echo "❌ Error: No se pudo leer el ticket para cerrarlo."
+             echo "❌ Error: No se pudo leer el ticket."
              exit 1
           fi
-          
-          echo "🔒 Lock Version actual: $LOCK_VERSION. Intentando cambiar estado..."
 
-          # 2. Construimos JSON solo para el estado
           jq -n \
             --argjson lock "$LOCK_VERSION" \
             --arg status_href "/api/v3/statuses/$OP_NEW_STATUS_ID" \
             '{ lockVersion: $lock, _links: { status: { href: $status_href } } }' > status_payload.json
 
-          # 3. Enviamos el cambio de estado
           HTTP_CODE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
             -d @status_payload.json)
 
           if [ "$HTTP_CODE_STATUS" -eq 200 ]; then
-            echo "✅ ¡Ticket #$TICKET_ID cerrado/actualizado con éxito!"
+            echo "✅ ¡Ticket #$TICKET_ID actualizado!"
           else
-            echo "❌ Fallo al cambiar estado (Código HTTP: $HTTP_CODE_STATUS)"
-            # No hacemos exit 1 para que no marque rojo si al menos la nota se guardó
+            echo "❌ Fallo estado ($HTTP_CODE_STATUS)"
             exit 0 
           fi
