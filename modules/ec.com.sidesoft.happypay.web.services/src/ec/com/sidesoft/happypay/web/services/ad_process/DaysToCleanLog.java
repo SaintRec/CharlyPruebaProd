@@ -23,6 +23,12 @@ import org.openbravo.base.exception.OBException;
 public class DaysToCleanLog extends DalBaseProcess{
 
 	private static ProcessLogger logger;
+	\
+
+
+
+
+
 	
 	@Override
 	protected void doExecute(ProcessBundle bundle) throws Exception {
