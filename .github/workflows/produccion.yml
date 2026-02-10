@@ -17,12 +17,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      # --- FASE 1: VALIDACIÓN (Solo PR) ---
+      # --- FASE 1: VALIDACIÓN ---
       - name: Validar Preproducción
         if: github.event_name == 'pull_request'
         run: echo "✅ Preproducción OK"
 
-      # --- FASE 2: PRODUCCIÓN (Merge a Main) ---
+      # --- FASE 2: PRODUCCIÓN ---
       - name: Actualizar OpenProject
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -30,7 +30,7 @@ jobs:
           OP_URL: ${{ secrets.OP_INSTANCE_URL }}
           OP_NEW_STATUS_ID: ${{ secrets.OP_STATUS_ID }}
         run: |
-          # 1. OBTENER DATOS DEL COMMIT
+          # 1. OBTENER DATOS
           COMMIT_MSG=$(git log -1 --pretty=%s)
           SHA_CURRENT=$(git rev-parse --short HEAD)
           SHA_PARENT=$(git rev-parse --short HEAD^ 2>/dev/null || echo "init")
@@ -42,29 +42,27 @@ jobs:
           fi
 
           # 2. EXTRAER ID DEL TICKET
-          # Busca el nombre de la rama en el merge (ej: "from .../Rama40")
           BRANCH_FULL=$(echo "$COMMIT_MSG" | grep -oE 'from .+' | awk '{print $NF}')
           if [ -z "$BRANCH_FULL" ]; then BRANCH_FULL="$COMMIT_MSG"; fi
           
-          # Extrae números al final
           TICKET_ID=$(echo "$BRANCH_FULL" | grep -oE '[0-9]+$' | head -n 1)
           
           if [ -z "$TICKET_ID" ]; then
-            echo "⚠️ No se detectó ID de ticket en la rama. Omitiendo actualización."
+            echo "⚠️ No se detectó ID de ticket. Omitiendo."
             exit 0
           fi
           
           echo "🎯 Procesando Ticket #$TICKET_ID"
 
-          # 3. OBTENER LOCK VERSION (Silencioso)
+          # 3. OBTENER LOCK VERSION
           LOCK_VERSION=$(curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID" | jq .lockVersion)
           
           if [ "$LOCK_VERSION" == "null" ] || [ -z "$LOCK_VERSION" ]; then
-             echo "❌ Error: No se pudo acceder al ticket #$TICKET_ID (Revisar permisos/existencia)."
+             echo "❌ Error: No se pudo obtener el ticket #$TICKET_ID (Revisar permisos/existencia)."
              exit 1
           fi
 
-          # 4. PREPARAR NOTA (Con fix || true para evitar error de lectura)
+          # 4. PREPARAR NOTA
           read -r -d '' NOTE_TEXT <<EOM || true
           *5. Datos de versionamiento en producción*
 
@@ -76,17 +74,14 @@ jobs:
           $FILE_DIFF
           EOM
 
-          # 5. ENVIAR ACTUALIZACIÓN
+          # 5. CONSTRUIR JSON (CORREGIDO: Todo en una línea para evitar errores de sintaxis)
           jq -n \
             --argjson lock "$LOCK_VERSION" \
             --arg desc "$NOTE_TEXT" \
             --arg status_href "/api/v3/statuses/$OP_NEW_STATUS_ID" \
-            '{
-              lockVersion: $lock,
-              _links: { status: { href: $status_href } },
-              journal: { raw: $desc }
-            ' > payload.json
+            '{ lockVersion: $lock, _links: { status: { href: $status_href } }, journal: { raw: $desc } }' > payload.json
 
+          # 6. ENVIAR
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
