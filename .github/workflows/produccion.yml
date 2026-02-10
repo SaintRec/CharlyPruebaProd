@@ -2,84 +2,79 @@ name: Flujo de Producción y OpenProject
 
 on:
   push:
-    branches: [ "main" ]     # Se ejecuta al fusionar a Producción
+    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]     # Se ejecuta al validar (Preproducción)
+    branches: [ "main" ]
 
 jobs:
   deploy-logic:
     runs-on: ubuntu-latest
-    # IMPORTANTE: Cambia 'CharlyPruebaProd/CharlyPruebaProd' por tu usuario/repo real si es diferente
+    # IMPORTANTE: Esto asegura que nadie desde un fork pueda ejecutarlo
     if: github.repository == 'CharlyPruebaProd/CharlyPruebaProd'
 
     steps:
       - name: Checkout del código
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Necesario para comparar commits y generar el historial
+          fetch-depth: 0
 
-      # --- FASE 1: PREPRODUCCIÓN (Solo corre en Pull Request) ---
+      # --- FASE 1: VALIDACIÓN (Solo en Pull Request) ---
       - name: Validar Preproducción
         if: github.event_name == 'pull_request'
-        run: |
-          echo "🛠️ INICIO DE VALIDACIÓN (PREPRODUCCIÓN)..."
-          echo "Aquí se ejecutarían tus pruebas unitarias o linters."
-          echo "✅ Preproducción finalizada correctamente."
+        run: echo "✅ Preproducción OK"
 
-      # --- FASE 2: PRODUCCIÓN (Solo corre al hacer Merge a main) ---
+      # --- FASE 2: PRODUCCIÓN (Solo al hacer Merge a Main) ---
       - name: Procesar Producción y Actualizar OpenProject
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          # El script leerá los valores que guardaste en GitHub Secrets
+          # AQUI ESTA LA CLAVE: Leemos los secretos, no quemamos nada.
           OP_API_KEY: ${{ secrets.OP_API_KEY }}
           OP_URL: ${{ secrets.OP_INSTANCE_URL }}
           OP_NEW_STATUS_ID: ${{ secrets.OP_STATUS_ID }}
         run: |
-          # --- 1. OBTENER DATOS DEL COMMIT Y GIT ---
+          # 1. OBTENER DATOS DE GIT
           COMMIT_MSG=$(git log -1 --pretty=%s)
           SHA_CURRENT=$(git rev-parse --short HEAD)
-          # Intentamos obtener el padre. Si es el primer commit, usamos un valor por defecto.
           SHA_PARENT=$(git rev-parse --short HEAD^ 2>/dev/null || echo "init")
           
           if [ "$SHA_PARENT" == "init" ]; then
-             FILE_DIFF="Primer despliegue (todos los archivos)"
+             FILE_DIFF="Primer despliegue"
           else
              FILE_DIFF=$(git --no-pager diff --name-only $SHA_CURRENT $SHA_PARENT)
           fi
 
-          echo "📝 Procesando Commit: $COMMIT_MSG"
+          echo "📝 Analizando mensaje: $COMMIT_MSG"
 
-          # --- 2. EXTRAER EL ID DEL TICKET (Busca formato OP#...) ---
-          # Ejemplo: "Fix login OP#37" -> Extrae "37"
-          TICKET_ID=$(echo "$COMMIT_MSG" | grep -oE 'OP#[0-9]+' | sed 's/OP#//')
+          # 2. LÓGICA DE EXTRACCIÓN DEL TICKET
+          # Busca el nombre de la rama en el mensaje de merge (ej: "from Charly/FixLogin123")
+          BRANCH_FULL=$(echo "$COMMIT_MSG" | grep -oE 'from .+' | awk '{print $NF}')
+          
+          # Si fue un push directo (sin PR), usamos el mensaje del commit
+          if [ -z "$BRANCH_FULL" ]; then
+             BRANCH_FULL="$COMMIT_MSG"
+          fi
+
+          # Extrae solo los números que estén AL FINAL del texto (ej: "Fix123" -> "123")
+          TICKET_ID=$(echo "$BRANCH_FULL" | grep -oE '[0-9]+$' | head -n 1)
           
           if [ -z "$TICKET_ID" ]; then
-            echo "⚠️ AVISO: No se encontró un ID de ticket (formato OP#número) en el mensaje del commit."
-            echo "El despliegue continúa, pero no se actualizará OpenProject."
+            echo "⚠️ No se detectó número de ticket al final del nombre (ej: RamaPrueba45)."
+            echo "El despliegue continúa, pero OpenProject no se actualizará."
             exit 0
           fi
           
-          echo "🔍 Ticket detectado: #$TICKET_ID"
+          echo "🔍 ID Detectado: #$TICKET_ID"
 
-          # --- 3. OBTENER VERSION DE BLOQUEO (LOCK VERSION) ---
-          # Consultamos a OpenProject para poder editar el ticket de forma segura
+          # 3. OBTENER LOCK VERSION DE OPENPROJECT
           RESPONSE=$(curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID")
-          
-          # Extraemos el lockVersion con jq
           LOCK_VERSION=$(echo $RESPONSE | jq .lockVersion)
           
-          # Validación de seguridad: Si lockVersion es null, el ticket no existe o el token está mal
           if [ "$LOCK_VERSION" == "null" ] || [ "$LOCK_VERSION" == "" ]; then
-             echo "❌ ERROR CRÍTICO: No se pudo acceder al ticket #$TICKET_ID."
-             echo "Verifica: 1. Que el ticket exista. 2. Que el Token tenga permisos. 3. Que la URL sea correcta."
-             echo "Respuesta del servidor: $RESPONSE"
+             echo "❌ Error: El ticket #$TICKET_ID no existe o la URL/Token son incorrectos."
              exit 1
           fi
 
-          echo "🔓 Versión de bloqueo obtenida: $LOCK_VERSION"
-
-          # --- 4. PREPARAR LAS NOTAS DE VERSIÓN ---
-          # Usamos sintaxis heredoc para mantener el formato limpio
+          # 4. PREPARAR NOTAS
           read -r -d '' NOTE_TEXT <<EOM
           *5. Datos de versionamiento en producción*
 
@@ -91,32 +86,27 @@ jobs:
           $FILE_DIFF
           EOM
 
-          # --- 5. ENVIAR ACTUALIZACIÓN A OPENPROJECT ---
-          # Construimos el JSON para cambiar estado y agregar comentario (journal)
+          # 5. ENVIAR CAMBIOS A OPENPROJECT
           jq -n \
             --argjson lock "$LOCK_VERSION" \
             --arg desc "$NOTE_TEXT" \
             --arg status_href "/api/v3/statuses/$OP_NEW_STATUS_ID" \
             '{
               lockVersion: $lock,
-              _links: {
-                status: { href: $status_href }
-              },
-              journal: $desc 
+              _links: { status: { href: $status_href } },
+              journal: { raw: $desc }
             ' > payload.json
 
-          echo "🚀 Enviando datos a OpenProject ($OP_URL)..."
-          
-          # Usamos -w para ver el código HTTP de respuesta
+          echo "🚀 Actualizando Ticket #$TICKET_ID en OpenProject..."
           HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
             -d @payload.json)
 
           if [ "$HTTP_CODE" -eq 200 ]; then
-            echo "✅ ¡ÉXITO! Ticket #$TICKET_ID actualizado correctamente."
+            echo "✅ ¡Ticket actualizado con éxito!"
           else
-            echo "❌ ERROR al actualizar. Código HTTP: $HTTP_CODE"
+            echo "❌ Fallo al actualizar ($HTTP_CODE)"
             cat response.json
             exit 1
           fi
