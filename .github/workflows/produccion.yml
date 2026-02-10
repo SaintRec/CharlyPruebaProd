@@ -30,7 +30,7 @@ jobs:
           OP_URL: ${{ secrets.OP_INSTANCE_URL }}
           OP_NEW_STATUS_ID: ${{ secrets.OP_STATUS_ID }}
         run: |
-          # 1. OBTENER DATOS
+          # 1. PREPARACIÓN
           COMMIT_MSG=$(git log -1 --pretty=%s)
           SHA_CURRENT=$(git rev-parse --short HEAD)
           SHA_PARENT=$(git rev-parse --short HEAD^ 2>/dev/null || echo "init")
@@ -41,24 +41,25 @@ jobs:
              FILE_DIFF=$(git --no-pager diff --name-only $SHA_CURRENT $SHA_PARENT)
           fi
 
-          # 2. EXTRAER ID DEL TICKET
+          # 2. OBTENER ID TICKET
           BRANCH_FULL=$(echo "$COMMIT_MSG" | grep -oE 'from .+' | awk '{print $NF}')
           if [ -z "$BRANCH_FULL" ]; then BRANCH_FULL="$COMMIT_MSG"; fi
-          
           TICKET_ID=$(echo "$BRANCH_FULL" | grep -oE '[0-9]+$' | head -n 1)
           
           if [ -z "$TICKET_ID" ]; then
-            echo "⚠️ No se detectó ID de ticket. Omitiendo."
+            echo "⚠️ No se detectó ID. Fin."
             exit 0
           fi
           
           echo "🎯 Procesando Ticket #$TICKET_ID"
 
           # 3. OBTENER LOCK VERSION
-          LOCK_VERSION=$(curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID" | jq .lockVersion)
+          curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID" > ticket_info.json
+          LOCK_VERSION=$(cat ticket_info.json | jq .lockVersion)
           
           if [ "$LOCK_VERSION" == "null" ] || [ -z "$LOCK_VERSION" ]; then
-             echo "❌ Error: No se pudo obtener el ticket #$TICKET_ID (Revisar permisos/existencia)."
+             echo "❌ Error al leer ticket. Respuesta del servidor:"
+             cat ticket_info.json
              exit 1
           fi
 
@@ -69,27 +70,33 @@ jobs:
           *Versionado en:* Comreivic (GitHub)
           *Commit:* $COMMIT_MSG
           *sha1:* $SHA_CURRENT
-          *sha1 Parent:* $SHA_PARENT
           *Extraer Archivos:*
           $FILE_DIFF
           EOM
 
-          # 5. CONSTRUIR JSON (CORREGIDO: Todo en una línea para evitar errores de sintaxis)
+          # 5. CONSTRUIR JSON Y MOSTRARLO (DEBUG)
           jq -n \
             --argjson lock "$LOCK_VERSION" \
             --arg desc "$NOTE_TEXT" \
             --arg status_href "/api/v3/statuses/$OP_NEW_STATUS_ID" \
             '{ lockVersion: $lock, _links: { status: { href: $status_href } }, journal: { raw: $desc } }' > payload.json
+          
+          echo "📦 JSON QUE ENVIAREMOS (Verifica si el status href tiene numero):"
+          cat payload.json
 
-          # 6. ENVIAR
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
+          # 6. ENVIAR Y CAPTURAR ERROR
+          curl -v -X PATCH "$OP_URL/api/v3/work_packages/$TICKET_ID" \
             -H "Content-Type: application/json" \
             -u "apikey:$OP_API_KEY" \
-            -d @payload.json)
+            -d @payload.json > response_error.txt 2>&1
 
-          if [ "$HTTP_CODE" -eq 200 ]; then
-            echo "✅ ¡Ticket #$TICKET_ID actualizado correctamente!"
+          # Chequeo simple de éxito en el log
+          if grep -q "HTTP/1.1 200" response_error.txt; then
+            echo "✅ ¡Ticket actualizado con éxito!"
           else
-            echo "❌ Fallo al actualizar (Código HTTP: $HTTP_CODE)"
+            echo "❌ FALLO AL ACTUALIZAR. MIRA EL ERROR ABAJO:"
+            echo "---------------------------------------------"
+            cat response_error.txt
+            echo "---------------------------------------------"
             exit 1
           fi
