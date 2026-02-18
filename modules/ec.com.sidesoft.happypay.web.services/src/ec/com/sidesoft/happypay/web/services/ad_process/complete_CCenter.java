@@ -80,6 +80,7 @@ public class complete_CCenter extends DalBaseProcess {
 		} finally {
 			OBContext.restorePreviousMode();
 			bundle.setResult(msg);
+
 		}
 	}
 
