@@ -3,21 +3,6 @@
   <row id="109B0D7EA8C94B5FA227E55451909B8E" trl="Y">
     <value column="Name" isTrl="Y" original="WS NouvoPay Conexion">Servicio NuovoPay</value>
   </row>
-  <row id="12EA5B94DF9A458DB6453B22120720D6" trl="Y">
-    <value column="Name" isTrl="Y" original="WS Credit Data">Datos de Crédito</value>
-  </row>
-  <row id="27F94539E81E4DF5ABA874A49A9A299F" trl="N">
-    <value column="Name" isTrl="Y" original="RC RegistroCivil Connection">RC RegistroCivil connection</value>
-  </row>
-  <row id="282C7A93C5924E2DB21104B9E545800A" trl="Y">
-    <value column="Name" isTrl="Y" original="Payment Monitor">Monitor de Pagos</value>
-  </row>
-  <row id="29007A2F934E48E4A87B10AA670201D9" trl="Y">
-    <value column="Name" isTrl="Y" original="WS Internal Debts">Deudas Internas</value>
-  </row>
-  <row id="2DE3D6D13BDC40A58EF576A2AB4E6335" trl="Y">
-    <value column="Name" isTrl="Y" original="Score Inclusion">Score Inclusión</value>
-  </row>
   <row id="37EA9665E1BF4CB0987E93BE8CDD68CD" trl="N">
     <value column="Name" isTrl="Y" original="WS Provider configuration">Configuración de Proveedor</value>
   </row>
