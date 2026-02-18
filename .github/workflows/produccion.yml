@@ -62,7 +62,7 @@ jobs:
 
           # --- CONSTRUIR NOTA CON EL COMANDO TEXTUAL ---
           read -r -d '' NOTE_TEXT <<EOM || true
-          *5. Datos de versionamiento en producción*
+          *Datos de versionamiento en producción*
 
           *Versionado en:* $REPO_NAME (GitHub)
           *Commit:* $COMMIT_MSG
