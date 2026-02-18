@@ -21,27 +21,27 @@ jobs:
         run: echo "✅ Preproducción OK"
 
       - name: Actualizar OpenProject
-        # CONDICIÓN DE SEGURIDAD (Solo Dueño)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+        # Colocar el nombre del repositorio y el usuario para evitar que se realice desde un fork
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'CharlyB03/CharlyPruebaProd'
         env:
           OP_API_KEY: ${{ secrets.OP_API_KEY }}
           OP_URL: ${{ secrets.OP_INSTANCE_URL }}
           OP_NEW_STATUS_ID: ${{ secrets.OP_STATUS_ID }}
         run: |
-          # --- 1. OBTENER DATOS ---
+          # ---  OBTENER DATOS ---
           COMMIT_MSG=$(git log -1 --pretty=%s)
           
-          # SHA1 Actual (El del Merge)
+          # SHA1 Actual 
           SHA_CURRENT=$(git rev-parse --short HEAD)
           
-          # SHA1 Parent (La rama del desarrollador que entró)
+          # SHA1 Parent
           SHA_PARENT_RAW=$(git log -1 --pretty=%p | awk '{print $NF}')
           SHA_PARENT=$(git rev-parse --short $SHA_PARENT_RAW)
           
           # Nombre del Repositorio
           REPO_NAME=${GITHUB_REPOSITORY#*/}
 
-          # --- 2. EXTRAER ID TICKET ---
+          # ---  EXTRAER ID TICKET ---
           BRANCH_FULL=$(echo "$COMMIT_MSG" | grep -oE 'from .+' | awk '{print $NF}')
           if [ -z "$BRANCH_FULL" ]; then BRANCH_FULL="$COMMIT_MSG"; fi
           TICKET_ID=$(echo "$BRANCH_FULL" | grep -oE '[0-9]+$' | head -n 1)
@@ -53,7 +53,7 @@ jobs:
           
           echo "🎯 Ticket #$TICKET_ID | SHA: $SHA_CURRENT | Parent: $SHA_PARENT"
 
-          # --- 3. CONSTRUIR NOTA CON EL COMANDO TEXTUAL ---
+          # --- CONSTRUIR NOTA CON EL COMANDO TEXTUAL ---
           read -r -d '' NOTE_TEXT <<EOM || true
           *5. Datos de versionamiento en producción*
 
@@ -65,7 +65,7 @@ jobs:
           git --no-pager diff --name-only $SHA_CURRENT $SHA_PARENT
           EOM
 
-          # --- 4. ENVIAR NOTA ---
+          # --- ENVIAR NOTA ---
           jq -n --arg desc "$NOTE_TEXT" '{ comment: { raw: $desc } }' > comment_payload.json
           
           curl -s -o /dev/null -X POST "$OP_URL/api/v3/work_packages/$TICKET_ID/activities" \
@@ -75,7 +75,7 @@ jobs:
             
           echo "✅ Nota con comando enviada."
 
-          # --- 5. ACTUALIZAR ESTADO ---
+          # ---  ACTUALIZAR ESTADO ---
           LOCK_VERSION=$(curl -s -u "apikey:$OP_API_KEY" "$OP_URL/api/v3/work_packages/$TICKET_ID" | jq .lockVersion)
           
           if [ "$LOCK_VERSION" == "null" ] || [ -z "$LOCK_VERSION" ]; then
