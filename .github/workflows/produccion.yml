@@ -69,9 +69,7 @@ jobs:
           *sha1:* $SHA_CURRENT
           *sha1 Parent:* $SHA_PARENT
           *Extraer Archivos:*
-          \`\`\`bash
           git --no-pager diff --name-only $SHA_CURRENT $SHA_PARENT
-          \`\`\`
           EOM
 
           # --- ENVIAR NOTA ---
