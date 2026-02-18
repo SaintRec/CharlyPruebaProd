@@ -67,6 +67,7 @@ public class complete_CCenter extends DalBaseProcess {
 				new_binnacle_opcredit binnacle = new new_binnacle_opcredit();
 				binnacle.createBinnacle(objCreditOperation, from_artboard, to_artboard,
 						objCreditOperation.getDocumentStatus(), observation);
+
 			}
 
 			msg.setType("Success");
